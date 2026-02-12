@@ -19,7 +19,7 @@
 #			flash programs the board with the compiled binary															#
 #																														#
 # Instructions:																											#
-#			Make sure to have Quartus installed on your system as well additional packages that may 					#
+#			Make sure to have Quartus 25.1 installed on your system as well additional packages that may 				#
 #			be needed to support your particular board. This file must be set as executable.							#
 #			The project name as well as the default top-level entity name are inherited from this project 				#
 #			directory. The script searches for any nested VHDL .vdh source files within the top-level 					#
@@ -43,10 +43,10 @@
 # 			Luca Jones																									#
 #					 																									#
 #########################################################################################################################
-VERSION="0.1.0"
+VERSION="25.1"
 case "$(uname -s)" in
-    Linux)   QUARTUS_BIN="/opt/intelFPGA/25.1/quartus/bin" ;;
-    MINGW*|MSYS*|CYGWIN*)  QUARTUS_BIN="/c/intelFPGA/25.1/quartus/bin64" ;;
+    Linux)   QUARTUS_BIN="/opt/intelFPGA/${VERSION}/quartus/bin" ;;
+    MINGW*|MSYS*|CYGWIN*)  QUARTUS_BIN="/c/altera_lite/${VERSION}std/quartus/bin64" ;;
     *)       echo "Unsupported OS" >&2; exit 1 ;;
 esac
 export PATH="$PATH:$QUARTUS_BIN"
@@ -72,13 +72,15 @@ q-help() {
     cat <<EOF
 quartus-cli $VERSION - Quartus Prime Lite CLI wrapper for FPGA development
 
-Usage: quartus-cli [-v | --version] [-h | --help] [command] [options]
+Usage: quartus-cli [command] [options]
 
 Commands:
 build              Synthesize, fit, assemble, and run timing analysis
 flash              Program the FPGA board over JTAG
 
 Options:
+-v | --version 	   Displays the verision of Quartus being used
+-h | --help		   Displays this help message 
 -p                 Force persistent programming when used with the flash command
 EOF
 }
@@ -531,7 +533,9 @@ q-build() {
 	wait $!
 	if [ $? -ne 0 ]; then
 		printf "${RED}FAILED${NC}\n"
-		grep -E "^(Error|Warning)" "$OUT_DIR/${PROJECT_NAME}.map.rpt"
+		if [ -f "$OUT_DIR/${PROJECT_NAME}.map.rpt" ]; then
+			grep -E "^(Error|Warning)" "$OUT_DIR/${PROJECT_NAME}.map.rpt"
+		fi
 		set -m
 		return 1
 	fi
