@@ -75,13 +75,13 @@ quartus-cli $VERSION - Quartus Prime Lite CLI wrapper for FPGA development
 Usage: quartus-cli [command] [options]
 
 Commands:
-build              Synthesize, fit, assemble, and run timing analysis
-flash              Program the FPGA board over JTAG
+build				Synthesize, fit, assemble, and run timing analysis
+flash				Program the FPGA board over JTAG
 
 Options:
--v | --version 	   Displays the verision of Quartus being used
--h | --help		   Displays this help message 
--p                 Force persistent programming when used with the flash command
+-v | --version		Displays the verision of Quartus being used
+-h | --help			Displays this help message 
+-p					Force persistent programming when used with the flash command
 EOF
 }
 
@@ -592,7 +592,7 @@ case "$1" in
         q-flash
         ;;
     -v | --version)
-        echo "quartus-cli $VERSION"
+        echo "Quartus $VERSION"
         ;;
     -h | --help | "")
         q-help
