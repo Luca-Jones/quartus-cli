@@ -1,6 +1,6 @@
 # quartus-cli
 
-A tool for building and flashing Intel FPGA designs from the command line! It is meant to be cross-compatible with Quartus Prime Lite in the sense that project files made by this tool can be used
+A tool for building and flashing Intel FPGA designs from the command line. It is meant to be cross-compatible with Quartus Prime Lite 25.1, so you can either open the project files made by this tool in the Quartus GUI or edit the VHDL source files in your text-editor of choice!
 
 ![demo](demo.gif)
 
