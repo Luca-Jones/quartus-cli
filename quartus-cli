@@ -51,21 +51,10 @@ case "$(uname -s)" in
 esac
 export PATH="$PATH:$QUARTUS_BIN"
 
-#########################################################################################################
-#                                            DEFAULTS                                                   #
-#########################################################################################################
-BOARD="MAX 10 DE10 - Lite"
-OUT_DIR="output_files"		 # quartus-prime defaults to output_files, but you can set it to whatever
-TOP_LEVEL_ENTITY=""		 	 # one of your VHDL files must have this entity defined in it
-PERSISTENT_PROGRAMMING=true  # the board will remember the program after losing power if set to true
-PROJECT_NAME="" 			 # will become the project directory name once q-build is run
-
 RED="\033[0;31m"
 GREEN="\033[0;32m"
 NC="\033[0m"
 
-# TODO: add a generate command to start out with a template project
-# TODO: confirm windows support
 # TODO: add more supported boards
 
 q-help() {
@@ -75,19 +64,32 @@ quartus-cli $VERSION - Quartus Prime Lite CLI wrapper for FPGA development
 Usage: quartus-cli [command] [options]
 
 Commands:
-build			Synthesize, fit, assemble, and run timing analysis
-flash			Program the FPGA board over JTAG
+build		Synthesize, fit, and assemble
+flash		Program the FPGA board
+init		Initializes a template project within the current directory
+
 
 Options:
--v | --version		Displays the verision of Quartus being used
--h | --help		Displays this help message 
--p			Force persistent programming when used with the flash command
+-v | --version 	Displays the version of Quartus being used
+-h | --help 	Displays this help message 
+-p 		Force persistent programming when used with the flash command
 EOF
 }
 
+# loads options from config if it exists
 q-config() {
+
+	# defaults
+	BOARD="MAX 10 DE10 - Lite"
+	OUT_DIR="output_files"		 # quartus-prime defaults to output_files, but you can set it to whatever
+	TOP_LEVEL_ENTITY=""		 	 # one of your VHDL files must have this entity defined in it
+	PERSISTENT_PROGRAMMING=true  # the board will remember the program after losing power if set to true
 	PROJECT_NAME="$(basename $(pwd))"
+
+	# defaults are overridden if a config exists
 	[ -f quartus.conf ] && eval "$(sed 's/ *= */=/' quartus.conf)"
+
+	# define board-specific variables
 	case "$BOARD" in
 	"MAX 10 DE10 - Lite")
 		FAMILY="MAX 10"
@@ -99,10 +101,8 @@ q-config() {
 	esac
 }
 
-q-init() {
-
-	# project name is the top-level directory
-	PROJECT_NAME="$(basename $(pwd))"
+# initializes quartus project files needed for building
+q-generate-project-files() {
 
 	{
 		echo "PROJECT_REVISION = \"$PROJECT_NAME\""
@@ -508,6 +508,34 @@ q-init() {
 
 }
 
+# generates a template project within the current directory
+q-init() { 
+
+	{
+		echo "BOARD=\"MAX 10 DE10 - Lite\""
+		echo "OUT_DIR=\"output_files\""  
+		echo "TOP_LEVEL_ENTITY=\"$(basename $(pwd))\""
+		echo "PERSISTENT_PROGRAMMING=false"
+	} > quartus.conf
+
+	{
+		echo "library ieee;"
+		echo "use ieee.std_logic_1164.all;"
+		printf "\n"
+		echo "entity $(basename $(pwd)) is"
+		printf "\tport(\n"
+		printf "\t\tSW   : in  std_logic_vector(9 downto 0);\n"
+		printf "\t\tLEDR : out std_logic_vector(9 downto 0)\n"
+		printf "\t);\n"
+		echo "end entity;"
+		printf "\n"
+		echo "architecture behavior of $(basename $(pwd)) is"
+		echo "begin"
+		printf "\tLEDR <= SW;\n"
+		echo "end architecture;"
+	} > $(basename $(pwd)).vhd
+}
+
 spin() {
 	local pid=$1
 	local chars='|/-\'
@@ -526,7 +554,7 @@ q-build() {
 	set +m
 	local start
 
-	printf "%-25s" "[1/3] Synthesis"
+	printf "%-35s" "[1/3] Synthesizing netlist"
 	start=$SECONDS
 	quartus_map $PROJECT_NAME --write_settings_files=off > /dev/null 2>&1 &
 	spin $!
@@ -541,14 +569,14 @@ q-build() {
 	fi
 	printf "${GREEN}DONE${NC} (%ds)\n" "$((SECONDS - start))"
 
-	printf "%-25s" "[2/3] Fitting"
+	printf "%-35s" "[2/3] Fitting netlist to resources"
 	start=$SECONDS
 	quartus_fit $PROJECT_NAME > /dev/null 2>&1 &
 	spin $!
 	wait $!
 	printf "${GREEN}DONE${NC} (%ds)\n" "$((SECONDS - start))"
 
-	printf "%-25s" "[3/3] Assembling"
+	printf "%-35s" "[3/3] Assembling binaries"
 	start=$SECONDS
 	quartus_asm $PROJECT_NAME > /dev/null 2>&1 &
 	spin $!
@@ -562,10 +590,10 @@ q-flash() {
 	set +m
 	local start=$SECONDS
 	if $PERSISTENT_PROGRAMMING ; then
-		printf "%-25s" "Flashing (Persistent)"
+		printf "%-35s" "Flashing (Persistent)"
 		quartus_pgm -m jtag -o "p;${OUT_DIR}/${PROJECT_NAME}.pof" > /dev/null 2>&1 &
 	else
-		printf "%-25s" "Flashing (Not Persistent)"
+		printf "%-35s" "Flashing (Not Persistent)"
 		quartus_pgm -m jtag -o "p;${OUT_DIR}/${PROJECT_NAME}.sof" > /dev/null 2>&1 &
 	fi
 	spin $!
@@ -577,7 +605,7 @@ q-flash() {
 case "$1" in
     build)
 		q-config
-		q-init
+		q-generate-project-files
         q-build
         ;;
     flash)
@@ -591,6 +619,11 @@ case "$1" in
 		esac
         q-flash
         ;;
+	init)
+		q-init
+		q-config
+		q-generate-project-files
+		;;
     -v | --version)
         echo "Quartus $VERSION"
         ;;
