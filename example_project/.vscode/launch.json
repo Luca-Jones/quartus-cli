@@ -1,0 +1,11 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Quartus Build & Flash",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "quartus-cli build && quartus-cli flash"
+        }
+    ]
+}
