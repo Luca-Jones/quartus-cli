@@ -6,7 +6,7 @@ A tool for building and flashing Intel FPGA designs from the command line. It is
 
 ## Prerequisites
 
-- Quartus Prime installed
+- Quartus Prime Lite 25.1 installed
 - Board-specific packages installed for your target FPGA
 
 ## Setup
@@ -14,7 +14,7 @@ A tool for building and flashing Intel FPGA designs from the command line. It is
 Pull the repo and make `quartus-cli` executable. It might be convenient to add it to your path or have it as an alias.
 
 ```bash
-git clone https://github/com/Luca-Jones/ez-quartus.git
+git clone https://github.com/Luca-Jones/quartus-cli
 cd quartus-cli
 chmod +x quartus-cli
 export PATH=$PATH:$(pwd) # temporarily add to the path
@@ -33,7 +33,7 @@ All commands should be run from the **top-level directory** of your project. The
 
 ## Project Structure
 
-The script searches for all nested `.vhd` files within the project directory, so you may organize your source files however you like:
+The script searches for all nested `.vhd` files within the project directory, so you may organize your source files however you like. Below is a simple example with a single `.vhd` file
 
 ```
 example_project/
@@ -72,9 +72,9 @@ Optionally create a `quartus.conf` file in your project directory to override de
 | Option | Default | Description |
 |--------|---------|-------------|
 | `BOARD` | `"MAX 10 DE10 - Lite"` | Target development board. Determines the FPGA family, device, and pin assignments. |
-| `OUT_DIR` | `"output_files"` | Directory for build outputs (.sof, reports, etc.). |
+| `OUT_DIR` | `"output_files"` | Directory for build outputs (.pof, .sof, reports, etc.). |
 | `TOP_LEVEL_ENTITY` | Project directory name | The entry-point entity for your design. Must match an entity defined in one of your VHDL files. |
 | `PERSISTENT_PROGRAMMING` | `false` | When `true`, flashes a .pof file so the board retains the program after power loss. When `false`, flashes a .sof file that is lost on power cycle. |
 
 ## Supported Boards
--  MAX 10 DE10 - Lite
+-  "MAX 10 DE10 - Lite"
