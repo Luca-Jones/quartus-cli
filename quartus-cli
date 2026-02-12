@@ -1,0 +1,601 @@
+#! /usr/bin/env bash
+
+#########################################################################################################################
+#   ________  ___  ___  ________  ________  _________  ___  ___  ________                 ________  ___       ___     	#
+#  |\   __  \|\  \|\  \|\   __  \|\   __  \|\___   ___\\  \|\  \|\   ____\               |\   ____\|\  \     |\  \    	#
+#  \ \  \|\  \ \  \\\  \ \  \|\  \ \  \|\  \|___ \  \_\ \  \\\  \ \  \___|_  ____________\ \  \___|\ \  \    \ \  \   	#
+#   \ \  \\\  \ \  \\\  \ \   __  \ \   _  _\   \ \  \ \ \  \\\  \ \_____  \|\____________\ \  \    \ \  \    \ \  \  	#
+#    \ \  \\\  \ \  \\\  \ \  \ \  \ \  \\  \|   \ \  \ \ \  \\\  \|____|\  \|____________|\ \  \____\ \  \____\ \  \ 	#
+#     \ \_____  \ \_______\ \__\ \__\ \__\\ _\    \ \__\ \ \_______\____\_\  \              \ \_______\ \_______\ \__\	#
+#      \|___| \__\|_______|\|__|\|__|\|__|\|__|    \|__|  \|_______|\_________\              \|_______|\|_______|\|__|	#
+#            \|__|                                                 \|_________|                                       	#
+#																														#
+#																														#
+# Description:  																										#
+#			A tool for building and flashing Intel FPGA designs from the command line!									#
+#																														#
+# Commands:																												#
+#			build compiles the project into a binary that is ready to flash onto the board								#
+#			flash programs the board with the compiled binary															#
+#																														#
+# Instructions:																											#
+#			Make sure to have Quartus installed on your system as well additional packages that may 					#
+#			be needed to support your particular board. This file must be set as executable.							#
+#			The project name as well as the default top-level entity name are inherited from this project 				#
+#			directory. The script searches for any nested VHDL .vdh source files within the top-level 					#
+#			directory, so feel free to organize them as you wish. However, you may still need to specify 				#
+# 			the top-level entity name if it is not the same as the project's name. The top-level entity 				#
+#			is defined in one of your VHDL	files and serves as the project's entrypoint. Configuration 				#
+#			options can be written to quartus.conf and an example is provided in the repository.						#
+# 																 														#
+# General workflow:						 										 										#	
+#		 	1. make the project directory																				#
+# 			2. source the quartus.sh file in your shell	(make sure it is executable)									#
+#			3. make your source files and declare at least the top-level entity											#
+#			4. modify the config options to your needs either here or in quartus.conf									#
+#			5. quartus-cli build																						#
+#			6. quartus-cli flash																						#
+# 																 														#
+# Supported Boards:																										#
+#			"MAX 10 DE10 - Lite"		 																				#
+# 																 														#
+# Author: 																												#
+# 			Luca Jones																									#
+#					 																									#
+#########################################################################################################################
+VERSION="0.1.0"
+case "$(uname -s)" in
+    Linux)   QUARTUS_BIN="/opt/intelFPGA/25.1/quartus/bin" ;;
+    MINGW*|MSYS*|CYGWIN*)  QUARTUS_BIN="/c/intelFPGA/25.1/quartus/bin64" ;;
+    *)       echo "Unsupported OS" >&2; exit 1 ;;
+esac
+export PATH="$PATH:$QUARTUS_BIN"
+
+#########################################################################################################
+#                                            DEFAULTS                                                   #
+#########################################################################################################
+BOARD="MAX 10 DE10 - Lite"
+OUT_DIR="output_files"		 # quartus-prime defaults to output_files, but you can set it to whatever
+TOP_LEVEL_ENTITY=""		 	 # one of your VHDL files must have this entity defined in it
+PERSISTENT_PROGRAMMING=true  # the board will remember the program after losing power if set to true
+PROJECT_NAME="" 			 # will become the project directory name once q-build is run
+
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+NC="\033[0m"
+
+# TODO: add a generate command to start out with a template project
+# TODO: confirm windows support
+# TODO: add more supported boards
+
+q-help() {
+    cat <<EOF
+quartus-cli $VERSION - Quartus Prime Lite CLI wrapper for FPGA development
+
+Usage: quartus-cli [-v | --version] [-h | --help] [command] [options]
+
+Commands:
+build              Synthesize, fit, assemble, and run timing analysis
+flash              Program the FPGA board over JTAG
+
+Options:
+-p                 Force persistent programming when used with the flash command
+EOF
+}
+
+q-config() {
+	PROJECT_NAME="$(basename $(pwd))"
+	[ -f quartus.conf ] && eval "$(sed 's/ *= */=/' quartus.conf)"
+	case "$BOARD" in
+	"MAX 10 DE10 - Lite")
+		FAMILY="MAX 10"
+		DEVICE="10M50DAF484C6GES"
+		;;
+	*)
+		echo "Unknown board: $BOARD"
+		;;
+	esac
+}
+
+q-init() {
+
+	# project name is the top-level directory
+	PROJECT_NAME="$(basename $(pwd))"
+
+	{
+		echo "PROJECT_REVISION = \"$PROJECT_NAME\""
+	} > $PROJECT_NAME.qpf
+
+	{
+		if [ -n "$TOP_LEVEL_ENTITY" ]; then
+			echo "set_global_assignment -name TOP_LEVEL_ENTITY \"${TOP_LEVEL_ENTITY}\""	
+		fi
+		echo "set_global_assignment -name FAMILY \"${FAMILY}\""
+		echo "set_global_assignment -name DEVICE \"${DEVICE}\""
+		echo "set_global_assignment -name BOARD \"${BOARD}\""
+		echo "set_global_assignment -name PROJECT_OUTPUT_DIRECTORY ${OUT_DIR}"
+
+		echo "set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL"
+		
+		# board-specific settings
+		case "$BOARD" in
+		"MAX 10 DE10 - Lite")
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ADC_CLK_10"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to MAX10_CLK1_50"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to MAX10_CLK2_50"
+			echo "set_location_assignment PIN_N5 -to ADC_CLK_10"
+			echo "set_location_assignment PIN_P11 -to MAX10_CLK1_50"
+			echo "set_location_assignment PIN_N14 -to MAX10_CLK2_50"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[8]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[9]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[10]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[11]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_ADDR[12]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_BA[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_BA[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_CAS_N"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_CKE"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_CLK"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_CS_N"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[8]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[9]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[10]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[11]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[12]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[13]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[14]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_DQ[15]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_LDQM"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_RAS_N"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_UDQM"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to DRAM_WE_N"
+			echo "set_location_assignment PIN_U17 -to DRAM_ADDR[0]"
+			echo "set_location_assignment PIN_W19 -to DRAM_ADDR[1]"
+			echo "set_location_assignment PIN_V18 -to DRAM_ADDR[2]"
+			echo "set_location_assignment PIN_U18 -to DRAM_ADDR[3]"
+			echo "set_location_assignment PIN_U19 -to DRAM_ADDR[4]"
+			echo "set_location_assignment PIN_T18 -to DRAM_ADDR[5]"
+			echo "set_location_assignment PIN_T19 -to DRAM_ADDR[6]"
+			echo "set_location_assignment PIN_R18 -to DRAM_ADDR[7]"
+			echo "set_location_assignment PIN_P18 -to DRAM_ADDR[8]"
+			echo "set_location_assignment PIN_P19 -to DRAM_ADDR[9]"
+			echo "set_location_assignment PIN_T20 -to DRAM_ADDR[10]"
+			echo "set_location_assignment PIN_P20 -to DRAM_ADDR[11]"
+			echo "set_location_assignment PIN_R20 -to DRAM_ADDR[12]"
+			echo "set_location_assignment PIN_T21 -to DRAM_BA[0]"
+			echo "set_location_assignment PIN_T22 -to DRAM_BA[1]"
+			echo "set_location_assignment PIN_U21 -to DRAM_CAS_N"
+			echo "set_location_assignment PIN_N22 -to DRAM_CKE"
+			echo "set_location_assignment PIN_L14 -to DRAM_CLK"
+			echo "set_location_assignment PIN_U20 -to DRAM_CS_N"
+			echo "set_location_assignment PIN_Y21 -to DRAM_DQ[0]"
+			echo "set_location_assignment PIN_Y20 -to DRAM_DQ[1]"
+			echo "set_location_assignment PIN_AA22 -to DRAM_DQ[2]"
+			echo "set_location_assignment PIN_AA21 -to DRAM_DQ[3]"
+			echo "set_location_assignment PIN_Y22 -to DRAM_DQ[4]"
+			echo "set_location_assignment PIN_W22 -to DRAM_DQ[5]"
+			echo "set_location_assignment PIN_W20 -to DRAM_DQ[6]"
+			echo "set_location_assignment PIN_V21 -to DRAM_DQ[7]"
+			echo "set_location_assignment PIN_P21 -to DRAM_DQ[8]"
+			echo "set_location_assignment PIN_J22 -to DRAM_DQ[9]"
+			echo "set_location_assignment PIN_H21 -to DRAM_DQ[10]"
+			echo "set_location_assignment PIN_H22 -to DRAM_DQ[11]"
+			echo "set_location_assignment PIN_G22 -to DRAM_DQ[12]"
+			echo "set_location_assignment PIN_G20 -to DRAM_DQ[13]"
+			echo "set_location_assignment PIN_G19 -to DRAM_DQ[14]"
+			echo "set_location_assignment PIN_F22 -to DRAM_DQ[15]"
+			echo "set_location_assignment PIN_V22 -to DRAM_LDQM"
+			echo "set_location_assignment PIN_U22 -to DRAM_RAS_N"
+			echo "set_location_assignment PIN_J21 -to DRAM_UDQM"
+			echo "set_location_assignment PIN_V20 -to DRAM_WE_N"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX0[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX0[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX0[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX0[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX0[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX0[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX0[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX0[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX1[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX1[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX1[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX1[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX1[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX1[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX1[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX1[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX2[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX2[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX2[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX2[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX2[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX2[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX2[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX2[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX3[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX3[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX3[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX3[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX3[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX3[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX3[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX3[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX4[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX4[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX4[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX4[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX4[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX4[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX4[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX4[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX5[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX5[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX5[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX5[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX5[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX5[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX5[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to HEX5[7]"
+			echo "set_location_assignment PIN_C14 -to HEX0[0]"
+			echo "set_location_assignment PIN_E15 -to HEX0[1]"
+			echo "set_location_assignment PIN_C15 -to HEX0[2]"
+			echo "set_location_assignment PIN_C16 -to HEX0[3]"
+			echo "set_location_assignment PIN_E16 -to HEX0[4]"
+			echo "set_location_assignment PIN_D17 -to HEX0[5]"
+			echo "set_location_assignment PIN_C17 -to HEX0[6]"
+			echo "set_location_assignment PIN_D15 -to HEX0[7]"
+			echo "set_location_assignment PIN_C18 -to HEX1[0]"
+			echo "set_location_assignment PIN_D18 -to HEX1[1]"
+			echo "set_location_assignment PIN_E18 -to HEX1[2]"
+			echo "set_location_assignment PIN_B16 -to HEX1[3]"
+			echo "set_location_assignment PIN_A17 -to HEX1[4]"
+			echo "set_location_assignment PIN_A18 -to HEX1[5]"
+			echo "set_location_assignment PIN_B17 -to HEX1[6]"
+			echo "set_location_assignment PIN_A16 -to HEX1[7]"
+			echo "set_location_assignment PIN_B20 -to HEX2[0]"
+			echo "set_location_assignment PIN_A20 -to HEX2[1]"
+			echo "set_location_assignment PIN_B19 -to HEX2[2]"
+			echo "set_location_assignment PIN_A21 -to HEX2[3]"
+			echo "set_location_assignment PIN_B21 -to HEX2[4]"
+			echo "set_location_assignment PIN_C22 -to HEX2[5]"
+			echo "set_location_assignment PIN_B22 -to HEX2[6]"
+			echo "set_location_assignment PIN_A19 -to HEX2[7]"
+			echo "set_location_assignment PIN_F21 -to HEX3[0]"
+			echo "set_location_assignment PIN_E22 -to HEX3[1]"
+			echo "set_location_assignment PIN_E21 -to HEX3[2]"
+			echo "set_location_assignment PIN_C19 -to HEX3[3]"
+			echo "set_location_assignment PIN_C20 -to HEX3[4]"
+			echo "set_location_assignment PIN_D19 -to HEX3[5]"
+			echo "set_location_assignment PIN_E17 -to HEX3[6]"
+			echo "set_location_assignment PIN_D22 -to HEX3[7]"
+			echo "set_location_assignment PIN_F18 -to HEX4[0]"
+			echo "set_location_assignment PIN_E20 -to HEX4[1]"
+			echo "set_location_assignment PIN_E19 -to HEX4[2]"
+			echo "set_location_assignment PIN_J18 -to HEX4[3]"
+			echo "set_location_assignment PIN_H19 -to HEX4[4]"
+			echo "set_location_assignment PIN_F19 -to HEX4[5]"
+			echo "set_location_assignment PIN_F20 -to HEX4[6]"
+			echo "set_location_assignment PIN_F17 -to HEX4[7]"
+			echo "set_location_assignment PIN_J20 -to HEX5[0]"
+			echo "set_location_assignment PIN_K20 -to HEX5[1]"
+			echo "set_location_assignment PIN_L18 -to HEX5[2]"
+			echo "set_location_assignment PIN_N18 -to HEX5[3]"
+			echo "set_location_assignment PIN_M20 -to HEX5[4]"
+			echo "set_location_assignment PIN_N19 -to HEX5[5]"
+			echo "set_location_assignment PIN_N20 -to HEX5[6]"
+			echo "set_location_assignment PIN_L19 -to HEX5[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3 V SCHMITT TRIGGER\" -to KEY[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3 V SCHMITT TRIGGER\" -to KEY[1]"
+			echo "set_location_assignment PIN_B8 -to KEY[0]"
+			echo "set_location_assignment PIN_A7 -to KEY[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to LEDR[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to LEDR[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to LEDR[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to LEDR[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to LEDR[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to LEDR[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to LEDR[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to LEDR[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to LEDR[8]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to LEDR[9]"
+			echo "set_location_assignment PIN_A8 -to LEDR[0]"
+			echo "set_location_assignment PIN_A9 -to LEDR[1]"
+			echo "set_location_assignment PIN_A10 -to LEDR[2]"
+			echo "set_location_assignment PIN_B10 -to LEDR[3]"
+			echo "set_location_assignment PIN_D13 -to LEDR[4]"
+			echo "set_location_assignment PIN_C13 -to LEDR[5]"
+			echo "set_location_assignment PIN_E14 -to LEDR[6]"
+			echo "set_location_assignment PIN_D14 -to LEDR[7]"
+			echo "set_location_assignment PIN_A11 -to LEDR[8]"
+			echo "set_location_assignment PIN_B11 -to LEDR[9]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to SW[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to SW[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to SW[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to SW[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to SW[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to SW[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to SW[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to SW[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to SW[8]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to SW[9]"
+			echo "set_location_assignment PIN_C10 -to SW[0]"
+			echo "set_location_assignment PIN_C11 -to SW[1]"
+			echo "set_location_assignment PIN_D12 -to SW[2]"
+			echo "set_location_assignment PIN_C12 -to SW[3]"
+			echo "set_location_assignment PIN_A12 -to SW[4]"
+			echo "set_location_assignment PIN_B12 -to SW[5]"
+			echo "set_location_assignment PIN_A13 -to SW[6]"
+			echo "set_location_assignment PIN_A14 -to SW[7]"
+			echo "set_location_assignment PIN_B14 -to SW[8]"
+			echo "set_location_assignment PIN_F15 -to SW[9]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_B[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_B[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_B[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_B[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_G[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_G[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_G[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_G[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_HS"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_R[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_R[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_R[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_R[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to VGA_VS"
+			echo "set_location_assignment PIN_P1 -to VGA_B[0]"
+			echo "set_location_assignment PIN_T1 -to VGA_B[1]"
+			echo "set_location_assignment PIN_P4 -to VGA_B[2]"
+			echo "set_location_assignment PIN_N2 -to VGA_B[3]"
+			echo "set_location_assignment PIN_W1 -to VGA_G[0]"
+			echo "set_location_assignment PIN_T2 -to VGA_G[1]"
+			echo "set_location_assignment PIN_R2 -to VGA_G[2]"
+			echo "set_location_assignment PIN_R1 -to VGA_G[3]"
+			echo "set_location_assignment PIN_N3 -to VGA_HS"
+			echo "set_location_assignment PIN_AA1 -to VGA_R[0]"
+			echo "set_location_assignment PIN_V1 -to VGA_R[1]"
+			echo "set_location_assignment PIN_Y2 -to VGA_R[2]"
+			echo "set_location_assignment PIN_Y1 -to VGA_R[3]"
+			echo "set_location_assignment PIN_N1 -to VGA_VS"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GSENSOR_CS_N"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GSENSOR_INT[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GSENSOR_INT[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GSENSOR_SCLK"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GSENSOR_SDI"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GSENSOR_SDO"
+			echo "set_location_assignment PIN_AB16 -to GSENSOR_CS_N"
+			echo "set_location_assignment PIN_Y14 -to GSENSOR_INT[1]"
+			echo "set_location_assignment PIN_Y13 -to GSENSOR_INT[2]"
+			echo "set_location_assignment PIN_AB15 -to GSENSOR_SCLK"
+			echo "set_location_assignment PIN_V11 -to GSENSOR_SDI"
+			echo "set_location_assignment PIN_V12 -to GSENSOR_SDO"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[8]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[9]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[10]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[11]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[12]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[13]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[14]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_IO[15]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to ARDUINO_RESET_N"
+			echo "set_location_assignment PIN_AB5 -to ARDUINO_IO[0]"
+			echo "set_location_assignment PIN_AB6 -to ARDUINO_IO[1]"
+			echo "set_location_assignment PIN_AB7 -to ARDUINO_IO[2]"
+			echo "set_location_assignment PIN_AB8 -to ARDUINO_IO[3]"
+			echo "set_location_assignment PIN_AB9 -to ARDUINO_IO[4]"
+			echo "set_location_assignment PIN_Y10 -to ARDUINO_IO[5]"
+			echo "set_location_assignment PIN_AA11 -to ARDUINO_IO[6]"
+			echo "set_location_assignment PIN_AA12 -to ARDUINO_IO[7]"
+			echo "set_location_assignment PIN_AB17 -to ARDUINO_IO[8]"
+			echo "set_location_assignment PIN_AA17 -to ARDUINO_IO[9]"
+			echo "set_location_assignment PIN_AB19 -to ARDUINO_IO[10]"
+			echo "set_location_assignment PIN_AA19 -to ARDUINO_IO[11]"
+			echo "set_location_assignment PIN_Y19 -to ARDUINO_IO[12]"
+			echo "set_location_assignment PIN_AB20 -to ARDUINO_IO[13]"
+			echo "set_location_assignment PIN_AB21 -to ARDUINO_IO[14]"
+			echo "set_location_assignment PIN_AA20 -to ARDUINO_IO[15]"
+			echo "set_location_assignment PIN_F16 -to ARDUINO_RESET_N"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[0]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[1]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[2]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[3]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[4]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[5]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[6]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[7]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[8]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[9]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[10]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[11]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[12]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[13]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[14]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[15]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[16]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[17]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[18]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[19]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[20]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[21]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[22]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[23]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[24]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[25]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[26]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[27]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[28]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[29]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[30]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[31]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[32]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[33]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[34]"
+			echo "set_instance_assignment -name IO_STANDARD \"3.3-V LVTTL\" -to GPIO[35]"
+			echo "set_location_assignment PIN_V10 -to GPIO[0]"
+			echo "set_location_assignment PIN_W10 -to GPIO[1]"
+			echo "set_location_assignment PIN_V9 -to GPIO[2]"
+			echo "set_location_assignment PIN_W9 -to GPIO[3]"
+			echo "set_location_assignment PIN_V8 -to GPIO[4]"
+			echo "set_location_assignment PIN_W8 -to GPIO[5]"
+			echo "set_location_assignment PIN_V7 -to GPIO[6]"
+			echo "set_location_assignment PIN_W7 -to GPIO[7]"
+			echo "set_location_assignment PIN_W6 -to GPIO[8]"
+			echo "set_location_assignment PIN_V5 -to GPIO[9]"
+			echo "set_location_assignment PIN_W5 -to GPIO[10]"
+			echo "set_location_assignment PIN_AA15 -to GPIO[11]"
+			echo "set_location_assignment PIN_AA14 -to GPIO[12]"
+			echo "set_location_assignment PIN_W13 -to GPIO[13]"
+			echo "set_location_assignment PIN_W12 -to GPIO[14]"
+			echo "set_location_assignment PIN_AB13 -to GPIO[15]"
+			echo "set_location_assignment PIN_AB12 -to GPIO[16]"
+			echo "set_location_assignment PIN_Y11 -to GPIO[17]"
+			echo "set_location_assignment PIN_AB11 -to GPIO[18]"
+			echo "set_location_assignment PIN_W11 -to GPIO[19]"
+			echo "set_location_assignment PIN_AB10 -to GPIO[20]"
+			echo "set_location_assignment PIN_AA10 -to GPIO[21]"
+			echo "set_location_assignment PIN_AA9 -to GPIO[22]"
+			echo "set_location_assignment PIN_Y8 -to GPIO[23]"
+			echo "set_location_assignment PIN_AA8 -to GPIO[24]"
+			echo "set_location_assignment PIN_Y7 -to GPIO[25]"
+			echo "set_location_assignment PIN_AA7 -to GPIO[26]"
+			echo "set_location_assignment PIN_Y6 -to GPIO[27]"
+			echo "set_location_assignment PIN_AA6 -to GPIO[28]"
+			echo "set_location_assignment PIN_Y5 -to GPIO[29]"
+			echo "set_location_assignment PIN_AA5 -to GPIO[30]"
+			echo "set_location_assignment PIN_Y4 -to GPIO[31]"
+			echo "set_location_assignment PIN_AB3 -to GPIO[32]"
+			echo "set_location_assignment PIN_Y3 -to GPIO[33]"
+			echo "set_location_assignment PIN_AB2 -to GPIO[34]"
+			echo "set_location_assignment PIN_AA2 -to GPIO[35]"
+			;;
+		*)
+			echo "Error: $BOARD board not supported" >&2
+    		return 1
+			;;
+		esac
+
+		# VHDL source files
+		find . -name "*.vhd" | while read f; do
+			echo "set_global_assignment -name VHDL_FILE ${f#./}"
+		done
+
+	} > $PROJECT_NAME.qsf
+
+}
+
+spin() {
+	local pid=$1
+	local chars='|/-\'
+	local i=0
+	printf "  "
+	while kill -0 "$pid" 2>/dev/null; do
+		printf "\b%s" "${chars:$((i%4)):1}"
+		i=$((i+1))
+		sleep 0.1
+	done
+	printf "\b"
+}
+
+# compiles the fpga project and generates the OUT_DIR, db, and incremental_db directories
+q-build() {
+	set +m
+	local start
+
+	printf "%-25s" "[1/3] Synthesis"
+	start=$SECONDS
+	quartus_map $PROJECT_NAME --write_settings_files=off > /dev/null 2>&1 &
+	spin $!
+	wait $!
+	if [ $? -ne 0 ]; then
+		printf "${RED}FAILED${NC}\n"
+		grep -E "^(Error|Warning)" "$OUT_DIR/${PROJECT_NAME}.map.rpt"
+		set -m
+		return 1
+	fi
+	printf "${GREEN}DONE${NC} (%ds)\n" "$((SECONDS - start))"
+
+	printf "%-25s" "[2/3] Fitting"
+	start=$SECONDS
+	quartus_fit $PROJECT_NAME > /dev/null 2>&1 &
+	spin $!
+	wait $!
+	printf "${GREEN}DONE${NC} (%ds)\n" "$((SECONDS - start))"
+
+	printf "%-25s" "[3/3] Assembling"
+	start=$SECONDS
+	quartus_asm $PROJECT_NAME > /dev/null 2>&1 &
+	spin $!
+	wait $!
+	printf "${GREEN}DONE${NC} (%ds)\n" "$((SECONDS - start))"
+
+}
+
+# run this after q-build to program the board
+q-flash() {
+	set +m
+	local start=$SECONDS
+	if $PERSISTENT_PROGRAMMING ; then
+		printf "%-25s" "Flashing (Persistent)"
+		quartus_pgm -m jtag -o "p;${OUT_DIR}/${PROJECT_NAME}.pof" > /dev/null 2>&1 &
+	else
+		printf "%-25s" "Flashing (Not Persistent)"
+		quartus_pgm -m jtag -o "p;${OUT_DIR}/${PROJECT_NAME}.sof" > /dev/null 2>&1 &
+	fi
+	spin $!
+	wait $!
+	printf "${GREEN}DONE${NC} (%ds)\n" "$((SECONDS - start))"
+	set -m
+}
+
+case "$1" in
+    build)
+		q-config
+		q-init
+        q-build
+        ;;
+    flash)
+		q-config
+		case "$2" in 
+			-p)
+				PERSISTENT_PROGRAMMING=true
+				;;
+			*)
+				;;
+		esac
+        q-flash
+        ;;
+    -v | --version)
+        echo "quartus-cli $VERSION"
+        ;;
+    -h | --help | "")
+        q-help
+        ;;
+    *)
+        echo "quartus-cli: unknown command '$1'" >&2
+        echo "Run 'quartus-cli --help' for usage." >&2
+        exit 1
+        ;;
+esac
