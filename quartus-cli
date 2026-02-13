@@ -992,17 +992,18 @@ spin() {
 q-build() {
 	set +m
 	local start
-
+	local log=$(mktemp)
 	printf "%-35s" "[1/3] Synthesizing netlist"
 	start=$SECONDS
-	quartus_map $PROJECT_NAME --write_settings_files=off > /dev/null 2>&1 &
+	quartus_map $PROJECT_NAME --write_settings_files=off > "$log" 2>&1 &
 	spin $!
 	wait $!
 	if [ $? -ne 0 ]; then
-		printf "${RED}FAILED${NC}\n"
-		if [ -f "$OUT_DIR/${PROJECT_NAME}.map.rpt" ]; then
-			grep -E "^(Error|Warning)" "$OUT_DIR/${PROJECT_NAME}.map.rpt"
-		fi
+		printf "${RED}FAILED${NC}\n\n"
+		grep -E "^\s*(Error|Warning)" "$log"
+		# if [ -f "$OUT_DIR/${PROJECT_NAME}.map.rpt" ]; then
+		# 	grep -E "^(Error|Warning)" "$OUT_DIR/${PROJECT_NAME}.map.rpt"
+		# fi
 		set -m
 		return 1
 	fi
@@ -1028,16 +1029,22 @@ q-build() {
 q-flash() {
 	set +m
 	local start=$SECONDS
+	local log=$(mktemp)
 	if $PERSISTENT_PROGRAMMING ; then
 		printf "%-35s" "Flashing (Persistent)"
-		quartus_pgm -m jtag -o "p;${OUT_DIR}/${PROJECT_NAME}.pof" > /dev/null 2>&1 &
+		quartus_pgm -m jtag -o "p;${OUT_DIR}/${PROJECT_NAME}.pof" > "$log" 2>&1 &
 	else
 		printf "%-35s" "Flashing (Not Persistent)"
-		quartus_pgm -m jtag -o "p;${OUT_DIR}/${PROJECT_NAME}.sof" > /dev/null 2>&1 &
+		quartus_pgm -m jtag -o "p;${OUT_DIR}/${PROJECT_NAME}.sof" > "$log" 2>&1 &
 	fi
 	spin $!
 	wait $!
-	printf "${GREEN}DONE${NC} (%ds)\n" "$((SECONDS - start))"
+	if [ $? -ne 0 ]; then
+		printf "${RED}FAILED${NC}\n\n"
+		grep -E "^\s*Error" "$log"
+	else 
+		printf "${GREEN}DONE${NC} (%ds)\n" "$((SECONDS - start))"
+	fi
 	set -m
 }
 
