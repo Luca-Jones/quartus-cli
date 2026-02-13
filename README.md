@@ -77,4 +77,5 @@ Optionally create a `quartus.conf` file in your project directory to override de
 | `PERSISTENT_PROGRAMMING` | `false` | When `true`, flashes a .pof file so the board retains the program after power loss. When `false`, flashes a .sof file that is lost on power cycle. |
 
 ## Supported Boards
--  "MAX 10 DE10 - Lite"
+-  "MAX 10 DE10 - Lite" (TESTED)
+- "DE0-CV Development Board" (NOT TESTED)
