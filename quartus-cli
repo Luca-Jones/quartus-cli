@@ -67,7 +67,7 @@ Commands:
 build		Synthesize, fit, and assemble
 flash		Program the FPGA board
 init		Initializes a template project within the current directory
-
+sim [entity]	Simulate work.[entity] a create a .vcd waverform file
 
 Options:
 -v | --version 	Displays the version of Quartus being used
@@ -960,6 +960,7 @@ q-init() {
 	{
 		echo "library ieee;"
 		echo "use ieee.std_logic_1164.all;"
+		echo "use ieee.numeric_std.all;"
 		printf "\n"
 		echo "entity $(basename $(pwd)) is"
 		printf "\tport(\n"
@@ -968,11 +969,14 @@ q-init() {
 		printf "\t);\n"
 		echo "end entity;"
 		printf "\n"
-		echo "architecture behavior of $(basename $(pwd)) is"
+		echo "architecture rtl of $(basename $(pwd)) is"
 		echo "begin"
 		printf "\tLEDR <= SW;\n"
-		echo "end architecture;"
+		printf "end architecture;\n"
 	} > $(basename $(pwd)).vhd
+
+	vlib work
+
 }
 
 spin() {
@@ -1048,6 +1052,51 @@ q-flash() {
 	set -m
 }
 
+q-compile() {
+	# Compile design files before testbenches, so every entity is analysed
+	# before the testbench that instantiates it (e.g. mux before muxTb).
+	# Convention: testbench files are named *Tb.vhd.
+	# (find is used instead of *.vhd so nested source dirs also work.)
+	local design_files=() tb_files=() f
+	while IFS= read -r f; do
+		case "$f" in
+			*Tb.vhd) tb_files+=("${f#./}") ;;
+			*)       design_files+=("${f#./}") ;;
+		esac
+	done < <(find . -name "*.vhd" | sort)
+
+	[ ${#design_files[@]} -gt 0 ] && { vcom "${design_files[@]}" || return 1; }
+	[ ${#tb_files[@]}     -gt 0 ] && { vcom "${tb_files[@]}"     || return 1; }
+}
+
+q-sim() {
+	# Resolve which entity to simulate. Priority:
+	#   1. an explicit name on the command line   (quartus-cli sim <entity>)
+	#   2. a testbench matching the project name   (<project>Tb)
+	#   3. the first *Tb.vhd found in the tree
+	#   4. the synthesizable top-level entity      (TOP_LEVEL_ENTITY, else project)
+	# Convention: the entity name matches its file name (without .vhd).
+	local sim_top="$1"
+	if [ -z "$sim_top" ]; then
+		if [ -f "${PROJECT_NAME}Tb.vhd" ]; then
+			sim_top="${PROJECT_NAME}Tb"
+		else
+			local tb
+			tb=$(find . -name "*Tb.vhd" | head -n 1)
+			if [ -n "$tb" ]; then
+				sim_top=$(basename "$tb" .vhd)
+			else
+				sim_top="${TOP_LEVEL_ENTITY:-$PROJECT_NAME}"
+			fi
+		fi
+	fi
+
+	echo "Simulating work.${sim_top}"
+	vsim -c -voptargs=+acc "work.${sim_top}" -do "log -r /*; run 1000 ns; quit"
+	wlf2vcd vsim.wlf -o wave.vcd
+	echo "created wave.vcd, you can view this with surfer wave.vcd"
+}
+
 case "$1" in
     build)
 		q-config
@@ -1069,6 +1118,11 @@ case "$1" in
 		q-init
 		q-config
 		q-generate-project-files
+		;;
+	sim)
+		q-config
+		q-compile
+		q-sim "$2"
 		;;
     -v | --version)
         echo "Quartus $VERSION"
